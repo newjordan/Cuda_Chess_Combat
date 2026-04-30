@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Rust / cargo
+target/
+Cargo.lock.bak
+
+# CUDA / nvcc build artifacts
+*.o
+*.a
+*.so
+
+# Built engine binaries (regenerate via `make` in cuda/engine/)
+cuda/engine/engine
+cuda/engine/engine_base
+cuda/engine/engine_cfx
+cuda/engine/engine_cfxd1
+cuda/engine/engine_test_perft
+cuda/engine/cfx_batch
+cuda/engine/cfx_smoke
+cuda/engine/coord3d_smoke
+cuda/engine/refcuda_smoke
+cuda/engine/tests/test_zobrist
+cuda/engine/tests/test_tt
+cuda/engine/tests/test_makeunmake_symmetry
+cuda/engine/tests/test_perft
+cuda/engine/artifacts/
+cuda/engine/__pycache__/
+
+# Live & replay run output (timestamped per-run; large per-game JSON dumps).
+# Keep canonical reports under results/ by name (e.g. ACCURACY_REPORT_*.md);
+# everything else is local artifact.
+combat_shipping/results/compare_*/
+combat_shipping/results/shadow_*.json
+combat_shipping/results/*.log
+combat_shipping/match-processor.pid
+combat_shipping/games.pgn
+
+# Editor / OS
+.DS_Store
+*.swp
+.vscode/
+.idea/
