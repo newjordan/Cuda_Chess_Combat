@@ -308,16 +308,21 @@ void handle_position(const std::vector<std::string>& tokens) {
         for (; i < tokens.size(); ++i) moves.push_back(tokens[i]);
     }
 
+    // Keep the previous position if the engine rejects the FEN or a move.
+    // Updating g_position first left the UCI side/FEN out of sync with the
+    // board search actually uses.
+    if (!engine::set_position(fen, moves)) {
+        std::fprintf(stderr, "uci: engine rejected position\n");
+        return;
+    }
+
     g_position.fen = fen;
     g_position.moves = moves;
     g_position.side_to_move = parse_stm_from_fen(fen);
-    // Side-to-move flips with each applied move (cheap, avoids re-parse).
+    // Side-to-move flips with each applied move. set_position already
+    // rejected a sequence that could not be applied in full.
     if (!moves.empty()) {
         g_position.side_to_move ^= (static_cast<int>(moves.size()) & 1);
-    }
-
-    if (!engine::set_position(fen, moves)) {
-        std::fprintf(stderr, "uci: engine rejected position\n");
     }
 }
 

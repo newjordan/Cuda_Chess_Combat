@@ -60,7 +60,11 @@ int main(int /*argc*/, char** /*argv*/) {
 
     for (int i = 0; i < N_CASES; i++) {
         Position p;
-        parse_fen(CASES[i].fen, &p);
+        if (parse_fen(CASES[i].fen, &p) != 0) {
+            printf("[FAIL] %-40s FEN rejected\n", CASES[i].name);
+            failures++;
+            continue;
+        }
         long long got = perft(&p, CASES[i].depth);
         bool ok = (got == CASES[i].expected);
         printf("[%s] %-40s depth=%d  got=%lld  expected=%lld\n",

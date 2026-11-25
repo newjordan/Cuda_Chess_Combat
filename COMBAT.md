@@ -1,5 +1,10 @@
 # cuda-dojo combat — GPU chess match resolver
 
+> The performance figures and "what works today" table below were recorded
+> on an earlier GPU machine. This workspace was not re-run on a GPU, so
+> those numbers are historical. For the current build, the CPU rules
+> tests, and how to run without a device, use the root [README](README.md).
+
 Self-contained branch for using cuda-dojo as a **chess match resolver**:
 load two engines (or two configurations of the same engine), pit them
 against each other, run a parity check against any PGN corpus, and

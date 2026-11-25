@@ -5,7 +5,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <cuda_runtime.h>
 
 namespace engine {
 
@@ -22,7 +21,9 @@ static constexpr int Z_TOTAL_KEYS      = Z_NUM_PIECE_KEYS + 1 + Z_NUM_CASTLE_KEY
 static_assert(Z_TOTAL_KEYS == 781, "zobrist key count must be 781");
 
 // Device side: keys live in __constant__ memory for fast cached access.
+#ifndef ENGINE_HOST_ONLY
 __constant__ uint64_t d_zobrist_keys[Z_TOTAL_KEYS];
+#endif
 
 // Host side: mirror so __host__ callers (zobrist_full from host) work.
 static uint64_t h_zobrist_keys[Z_TOTAL_KEYS];
@@ -48,7 +49,7 @@ __host__ __device__ static inline uint64_t splitmix64(uint64_t& s) {
 
 // ---------- accessor that selects host vs device table ----------
 __host__ __device__ static inline uint64_t zk(int idx) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) && !defined(ENGINE_HOST_ONLY)
     return d_zobrist_keys[idx];
 #else
     return h_zobrist_keys[idx];
@@ -78,6 +79,7 @@ void init_zobrist(uint64_t seed) {
     for (int i = 0; i < Z_TOTAL_KEYS; i++) {
         h_zobrist_keys[i] = splitmix64(s);
     }
+#ifndef ENGINE_HOST_ONLY
     cudaError_t err = cudaMemcpyToSymbol(d_zobrist_keys, h_zobrist_keys,
                                          sizeof(uint64_t) * Z_TOTAL_KEYS,
                                          0, cudaMemcpyHostToDevice);
@@ -85,6 +87,7 @@ void init_zobrist(uint64_t seed) {
         fprintf(stderr, "init_zobrist: cudaMemcpyToSymbol failed: %s\n",
                 cudaGetErrorString(err));
     }
+#endif
     g_initialized = true;
     g_initialized_seed = seed;
 }

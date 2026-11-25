@@ -1,16 +1,19 @@
-//! Python bindings for dojo-ref. All chess work runs on the GPU; Python
-//! just holds typed Position / Move / Engine handles and gets results back.
+//! Python bindings for dojo-ref.
 //!
-//! Build: `maturin develop` from this crate's dir installs a `dojo_ref`
-//! Python module backed by librefcuda.so.
+//! The default feature links the CUDA referee (`librefcuda.so`).
+//! `maturin develop --no-default-features --features cpu` builds the same
+//! API against the host rules library, with search unavailable.
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use dojoref as dr;
 
-/// Wraps dr::Position. All methods dispatch chess work to GPU kernels.
-#[pyclass(name = "Position")]
+/// Wraps dr::Position. Rules calls go to the CUDA referee or the CPU
+/// backend, depending on which feature built this module.
+// `unsendable`: the position owns a raw C allocation. PyO3 requires
+// pyclasses to be Send + Sync unless they opt out.
+#[pyclass(name = "Position", unsendable)]
 struct PyPosition {
     inner: dr::Position,
 }
@@ -72,7 +75,7 @@ impl PyPosition {
 }
 
 /// Wraps dr::Engine. Search subsystem (TT, alpha-beta, PeSTO) on GPU.
-#[pyclass(name = "Engine")]
+#[pyclass(name = "Engine", unsendable)]
 struct PyEngine {
     inner: dr::Engine,
 }
@@ -159,10 +162,9 @@ fn dojo_ref(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(make_move_batched, m)?)?;
     m.add_function(wrap_pyfunction!(is_check_batched, m)?)?;
     m.add("__doc__",
-        "GPU chess referee — typed bindings around librefcuda.so. \
-         Every chess operation dispatches to a CUDA kernel. \
-         Module-level legal_moves_batched / make_move_batched / \
-         is_check_batched accept lists of Positions for one-launch \
-         dispatch, ~13× faster than per-position calls at moderate N.")?;
+        "Chess referee bindings. The default build links librefcuda.so. \
+         The cpu feature compiles the same rules API for the host and \
+         leaves search unavailable. legal_moves_batched, \
+         make_move_batched, and is_check_batched take a list of positions.")?;
     Ok(())
 }

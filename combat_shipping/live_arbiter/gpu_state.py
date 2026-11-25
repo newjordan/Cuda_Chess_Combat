@@ -32,7 +32,11 @@ FILES = "abcdefgh"
 
 
 def _sq_uci_to_idx(uci_sq: str) -> int:
-    """a1 -> 0, h8 -> 63 (rank-major, matches dojo_ref convention)."""
+    """Host bookkeeping index: a1 -> 0, h8 -> 63.
+
+    This is not the engine mailbox. engine_types.h stores a8 at index 0.
+    HostState only exchanges FEN and UCI with the engine, never raw indices.
+    """
     return (ord(uci_sq[1]) - ord("1")) * 8 + (ord(uci_sq[0]) - ord("a"))
 
 
@@ -119,33 +123,52 @@ class HostState:
     # ---- Insufficient material (arbiter insufficientMaterial) ----------
 
     def insufficient_material(self) -> bool:
+        """True when checkmate is impossible for either side.
+
+        K vs K, K+N vs K, K+B vs K, and K+B vs K+B with the bishops on the
+        same color. A queen, rook, pawn, or knight alongside anything else
+        is not an automatic draw — the previous check treated Q+N vs K as
+        insufficient because it only looked for any bishop or knight.
+        """
         pieces = list(self.piecemap.values())
-        if len(pieces) == 2:
+        if sum(1 for p in pieces if p.lower() == "k") != 2:
+            return False
+        others = [p for p in pieces if p.lower() != "k"]
+        if not others:
             return True
-        if len(pieces) == 3:
-            for p in pieces:
-                if p.lower() in ("b", "n"):
-                    return True
-        if len(pieces) == 4:
-            bishops = [s for s, p in self.piecemap.items() if p.lower() == "b"]
-            if len(bishops) == 2:
-                c1 = ((bishops[0] >> 3) + (bishops[0] & 7)) % 2
-                c2 = ((bishops[1] >> 3) + (bishops[1] & 7)) % 2
-                if c1 == c2:
-                    return True
+        if any(p.lower() in ("p", "r", "q") for p in others):
+            return False
+        if len(others) == 1 and others[0].lower() in ("b", "n"):
+            return True
+        if len(others) == 2 and all(p.lower() == "b" for p in others):
+            bishops = [sq for sq, p in self.piecemap.items() if p.lower() == "b"]
+            c1 = ((bishops[0] >> 3) + (bishops[0] & 7)) % 2
+            c2 = ((bishops[1] >> 3) + (bishops[1] & 7)) % 2
+            return c1 == c2
         return False
 
     # ---- Apply a UCI move to host-side state ---------------------------
 
     def apply_uci(self, uci: str) -> None:
-        """Update host bookkeeping after a UCI move that the GPU has
-        already validated and applied. NO chess-compute decisions here —
-        we are mirroring the move on the side-channel state.
+        """Update host bookkeeping after a UCI move that the referee has
+        already validated and applied. This mirrors the move on the
+        side-channel state; it does not decide legality.
         """
+        if not isinstance(uci, str) or len(uci) < 4 or len(uci) > 5:
+            raise ValueError(f"invalid UCI move: {uci!r}")
+        if (uci[0] not in FILES or uci[2] not in FILES or
+                uci[1] not in "12345678" or uci[3] not in "12345678"):
+            raise ValueError(f"invalid UCI move: {uci!r}")
+        promo = ""
+        if len(uci) == 5:
+            promo = uci[4]
+            if promo not in "qrbn":
+                raise ValueError(f"invalid promotion piece: {uci!r}")
         f_sq = _sq_uci_to_idx(uci[0:2])
         t_sq = _sq_uci_to_idx(uci[2:4])
-        promo = uci[4:5] if len(uci) >= 5 else ""
-        piece = self.piecemap.get(f_sq, "")
+        piece = self.piecemap.get(f_sq)
+        if not piece:
+            raise ValueError(f"no piece on {uci[0:2]}")
         mover_white = self.side == "w"
 
         is_pawn = piece.lower() == "p"
@@ -158,15 +181,18 @@ class HostState:
         # ---- Castling: king moves 2 files ----
         is_castle = piece in ("K", "k") and abs((t_sq & 7) - (f_sq & 7)) == 2
         if is_castle:
-            del self.piecemap[f_sq]
-            self.piecemap[t_sq] = piece
             rank_off = f_sq & ~7
             df = (t_sq & 7) - (f_sq & 7)
             if df > 0:
                 rook_from, rook_to = rank_off + 7, rank_off + 5
             else:
                 rook_from, rook_to = rank_off + 0, rank_off + 3
-            rook = self.piecemap.pop(rook_from, "R" if mover_white else "r")
+            rook = self.piecemap.get(rook_from)
+            if rook is None:
+                raise ValueError(f"castle without a rook for {uci}")
+            del self.piecemap[f_sq]
+            self.piecemap[t_sq] = piece
+            del self.piecemap[rook_from]
             self.piecemap[rook_to] = rook
         else:
             # ---- En passant capture ----

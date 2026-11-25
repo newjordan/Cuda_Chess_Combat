@@ -1,11 +1,11 @@
 [build-system]
-requires = ["maturin>=1.13,<2.0"]
+requires = ["maturin>=1.7,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "dojo_ref"
 version = "0.1.0"
-description = "Python bindings for cuda-dojo's GPU chess referee"
+description = "Python bindings for the cuda-dojo chess referee (GPU by default, CPU rules via the cpu feature)"
 requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Rust",

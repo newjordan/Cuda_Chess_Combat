@@ -1,9 +1,9 @@
 [package]
 name = "dojo-ref"
 version = "0.1.0"
-edition = "2021"
-description = "Rust FFI binding for cuda-dojo's GPU chess referee (librefcuda.so)"
-license = "Apache-2.0"
+edition.workspace = true
+description = "Rust FFI for the chess referee. Default links librefcuda.so; the cpu feature compiles the rules layer with the host compiler."
+license.workspace = true
 
 [lib]
 name = "dojo_ref"
@@ -20,5 +20,16 @@ path = "examples/play_game.rs"
 [[example]]
 name = "match"
 path = "examples/match.rs"
+
+[features]
+default = ["gpu"]
+# Link librefcuda.so and the CUDA runtime.
+gpu = []
+# Compile the engine rules layer with the host C++ compiler. Search is
+# unavailable; legal moves, make/unmake, and check detection run on the CPU.
+cpu = []
+
+[build-dependencies]
+cc = "1"
 
 [dependencies]
