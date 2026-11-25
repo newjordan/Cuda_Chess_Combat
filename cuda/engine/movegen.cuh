@@ -35,8 +35,16 @@ inline int h_generate_moves(const Position* s, Move* moves) {
 // Reproduces the contract from gpu_fighter.cu's h_perft.
 long long perft(Position* s, int depth);
 
-// Parse a FEN string into a Position. Same semantics as gpu_fighter parse_fen.
-void parse_fen(const char* fen, Position* s);
+// Parse a FEN string into a Position.
+// Returns 0 on success. Returns -1 on a malformed FEN and zeroes `s`
+// (kings set to -1, ep set to -1) so callers cannot use a partial board.
+// Clocks may be omitted; missing halfmove defaults to 0 and missing
+// fullmove defaults to 1. Trailing tokens are ignored.
+int parse_fen(const char* fen, Position* s);
+
+// Write the FEN for `s` into `out` (NUL-terminated). Returns 0, or -1 if
+// `cap` is too small. Square index 0 is a8, matching Position::board.
+int position_to_fen(const Position* s, char* out, int cap);
 
 // Encode a Move in long-algebraic UCI form into `uci` (caller supplies >=6 bytes).
 void move_to_uci(Move move, char* uci);

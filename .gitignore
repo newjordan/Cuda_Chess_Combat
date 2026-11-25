@@ -11,6 +11,7 @@ Cargo.lock.bak
 *.o
 *.a
 *.so
+cuda/engine/build/
 
 # Built engine binaries (regenerate via `make` in cuda/engine/)
 cuda/engine/engine

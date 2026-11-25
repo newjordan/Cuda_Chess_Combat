@@ -1,19 +1,22 @@
-//! GPU chess referee — Rust binding for cuda-dojo's `librefcuda.so`.
+//! Chess referee binding.
 //!
-//! Every chess operation dispatches to a CUDA kernel inside the dojo's
-//! GPU engine. Rust handles type safety, ownership, and string conversion;
-//! it does NO chess work on the host. This is the canonical referee that
-//! chess_train, the omnifold pipeline, and any future engine should use
-//! to talk to the GPU's chess rules layer.
+//! With the default `gpu` feature this links `librefcuda.so` and every
+//! rules call launches a CUDA kernel. With `--no-default-features --features cpu`
+//! the same C ABI is compiled from the engine sources for the host, so
+//! legal moves, make/unmake, and check detection run without a GPU.
+//! Search still requires the CUDA engine and returns `None` on the CPU path.
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int};
 
-/// Opaque handle to a `cuda_dojo::engine::Position` (74 bytes mailbox + side
-/// + castling + ep + clocks). Allocated by the C ABI; freed via `Drop`.
+/// Opaque position allocated by the C ABI (`refc_position_new`).
+///
+/// The host allocation is `refc_position_size()` bytes. This Rust type is
+/// zero-sized on purpose: copying a fixed 96-byte struct would read past
+/// the 74-byte `Position` the C side allocates.
 #[repr(C)]
 pub struct PositionRaw {
-    _data: [u8; 96], // 74 actual bytes + safety padding
+    _opaque: [u8; 0],
 }
 
 extern "C" {
@@ -53,10 +56,8 @@ extern "C" {
         score_out: *mut c_int,
     ) -> c_int;
 
-    // Batched ABI — process N positions in one launch + one synchronize.
-    // Inputs are CONTIGUOUS Position structs of size refc_position_size()
-    // bytes each (NOT PositionRaw with its safety padding) — see the
-    // packed buffer the safe wrappers below build.
+    // Batched ABI. Inputs are contiguous C `Position` blobs of
+    // `refc_position_size()` bytes each. The safe wrappers pack them.
     fn refc_legal_moves_batched(
         positions: *const u8,
         n: c_int,
@@ -164,9 +165,14 @@ impl Position {
         buf.into_iter().map(Move).collect()
     }
 
-    /// Number of legal moves. Computed on GPU.
+    /// Number of legal moves.
     pub fn legal_count(&self) -> usize {
-        unsafe { refc_legal_count(self.raw) as usize }
+        let n = unsafe { refc_legal_count(self.raw) };
+        if n < 0 {
+            0
+        } else {
+            n as usize
+        }
     }
 
     /// Side-to-move's king is currently attacked (in check). Computed on GPU.
@@ -436,5 +442,107 @@ impl Drop for Engine {
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(all(test, feature = "cpu"))]
+mod tests {
+    use super::*;
+
+    fn perft(pos: &Position, depth: usize) -> u64 {
+        let moves = pos.legal_moves();
+        if depth == 1 {
+            return moves.len() as u64;
+        }
+        let mut total = 0u64;
+        for mv in moves {
+            let child = pos.make_move(mv).expect("legal move");
+            total += perft(&child, depth - 1);
+        }
+        total
+    }
+
+    fn ucis(pos: &Position) -> Vec<String> {
+        pos.legal_moves().into_iter().map(|m| m.to_uci()).collect()
+    }
+
+    #[test]
+    fn startpos_moves_and_perft() {
+        let pos = Position::startpos();
+        assert_eq!(pos.legal_count(), 20);
+        assert!(!pos.is_check());
+        assert!(!pos.is_checkmate());
+        assert!(!pos.is_stalemate());
+        let moves = ucis(&pos);
+        assert!(moves.iter().any(|m| m == "e2e4"));
+        assert!(moves.iter().any(|m| m == "g1f3"));
+        assert!(!moves.iter().any(|m| m == "e2e5"));
+        assert_eq!(perft(&pos, 3), 8902);
+    }
+
+    #[test]
+    fn published_perft_samples() {
+        let kiwi = Position::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        )
+        .unwrap();
+        assert_eq!(perft(&kiwi, 2), 2039);
+        let endgame =
+            Position::from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1").unwrap();
+        assert_eq!(perft(&endgame, 4), 43238);
+    }
+
+    #[test]
+    fn mate_stalemate_and_en_passant() {
+        let mate = Position::from_fen(
+            "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+        )
+        .unwrap();
+        assert!(mate.is_check());
+        assert!(mate.is_checkmate());
+        assert!(!mate.is_stalemate());
+
+        let stale = Position::from_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1").unwrap();
+        assert!(stale.is_stalemate());
+        assert!(!stale.is_checkmate());
+
+        let ep = Position::from_fen(
+            "rnbqkbnr/pp1ppppp/8/2ppP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3",
+        )
+        .unwrap();
+        assert!(ucis(&ep).iter().any(|m| m == "e5d6"));
+    }
+
+    #[test]
+    fn rejects_bad_fen() {
+        assert!(Position::from_fen("nope").is_err());
+        assert!(Position::from_fen("8/8/8/8/8/8/8/8 w - - 0 1").is_err());
+        assert!(Position::from_fen("9/8/8/8/8/8/8/8 w - - 0 1").is_err());
+    }
+
+    #[test]
+    fn batched_matches_single() {
+        let start = Position::startpos();
+        let e2e4 = start
+            .legal_moves()
+            .into_iter()
+            .find(|m| m.to_uci() == "e2e4")
+            .unwrap();
+        let after = start.make_move(e2e4).unwrap();
+        let batch = legal_moves_batched(&[&start, &after]);
+        assert_eq!(batch[0].len(), start.legal_count());
+        assert_eq!(batch[1].len(), after.legal_count());
+        assert_eq!(
+            is_check_batched(&[&start, &after]),
+            vec![start.is_check(), after.is_check()]
+        );
+        let made = make_move_batched(&[&start], &[e2e4]).unwrap();
+        assert_eq!(made[0].legal_count(), after.legal_count());
+    }
+
+    #[test]
+    fn search_needs_the_gpu_engine() {
+        let engine = Engine::new();
+        assert!(engine.search_depth(&Position::startpos(), 1).is_none());
     }
 }

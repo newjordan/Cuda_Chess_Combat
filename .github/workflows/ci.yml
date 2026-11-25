@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cpu:
+    name: CPU rules, Rust FFI, Python bookkeeping
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: C++ and Python toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++ make python3 python3-dev
+      - name: Test without a GPU
+        run: make test

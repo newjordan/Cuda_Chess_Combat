@@ -1,8 +1,11 @@
 # =============================================================================
 # cuda/engine/Makefile
 # =============================================================================
-NVCC      ?= /usr/local/cuda-13.0/bin/nvcc
-CUDA_PATH ?= /usr/local/cuda-13.0
+# GPU builds use nvcc when it is on PATH (or NVCC=...). CPU rules tests do
+# not need a toolkit: `make cpu-test`.
+NVCC_BIN := $(shell command -v nvcc 2>/dev/null)
+NVCC ?= $(if $(NVCC_BIN),$(NVCC_BIN),nvcc)
+CUDA_PATH ?= $(if $(NVCC_BIN),$(patsubst %/bin/nvcc,%,$(NVCC_BIN)),/usr/local/cuda)
 CUDA_SINGLE_GPU_TARGET ?= dgx-spark
 CUDA_ARCH ?=
 CUDA_EXTRA_NVCC_FLAGS ?=
@@ -11,6 +14,9 @@ CXX_STD    ?= -std=c++17
 INCLUDES   ?= -I.
 RDC_FLAGS  ?= -rdc=true
 PYTHON_BIN ?= $(shell command -v python3 2>/dev/null)
+CXX ?= g++
+CPU_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -DENGINE_HOST_ONLY -I.
+CPU_BUILD := build/cpu
 
 ifeq ($(strip $(CUDA_ARCH)),)
   ifeq ($(CUDA_SINGLE_GPU_TARGET),dgx-spark)
@@ -33,7 +39,13 @@ endif
 ARCH_FLAGS ?= $(CUDA_ARCH_FLAGS)
 ENGINE_ARCH_FLAGS ?= $(ARCH_FLAGS)
 
+# `make` builds the GPU engine when nvcc exists, and the CPU test suite
+# otherwise, so a machine without a toolkit still has a working default.
+ifeq ($(NVCC_BIN),)
+.DEFAULT_GOAL := cpu-test
+else
 .DEFAULT_GOAL := all
+endif
 
 ENGINE_SRCS = movegen.cu make_unmake.cu attacks.cu eval.cu eval_service.cu scheduler.cu
 ENGINE_OBJS = movegen.o make_unmake.o attacks.o eval.o eval_service.o scheduler.o
@@ -157,13 +169,65 @@ dojo_ref_play: dojo_ref
 	$(CARGO) run --manifest-path $(RUST_DIR)/Cargo.toml --release \
 	    --example play_game
 
+# -----------------------------------------------------------------------------
+# CPU-only rules library and tests. Compiles the same movegen / make-unmake /
+# attacks / zobrist sources with g++. No CUDA headers, no device code.
+# -----------------------------------------------------------------------------
+CPU_OBJS = $(CPU_BUILD)/movegen.o $(CPU_BUILD)/make_unmake.o \
+           $(CPU_BUILD)/attacks.o $(CPU_BUILD)/zobrist.o $(CPU_BUILD)/refcpu.o
+
+$(CPU_BUILD):
+	mkdir -p $(CPU_BUILD)
+
+$(CPU_BUILD)/movegen.o: movegen.cu $(ENGINE_HDRS) host_compat.h | $(CPU_BUILD)
+	$(CXX) $(CPU_CXXFLAGS) -x c++ -c movegen.cu -o $@
+
+$(CPU_BUILD)/make_unmake.o: make_unmake.cu $(ENGINE_HDRS) host_compat.h | $(CPU_BUILD)
+	$(CXX) $(CPU_CXXFLAGS) -x c++ -c make_unmake.cu -o $@
+
+$(CPU_BUILD)/attacks.o: attacks.cu attacks.cuh engine_types.h host_compat.h | $(CPU_BUILD)
+	$(CXX) $(CPU_CXXFLAGS) -x c++ -c attacks.cu -o $@
+
+$(CPU_BUILD)/zobrist.o: zobrist.cu zobrist.cuh engine_types.h host_compat.h | $(CPU_BUILD)
+	$(CXX) $(CPU_CXXFLAGS) -x c++ -c zobrist.cu -o $@
+
+$(CPU_BUILD)/refcpu.o: cpu/refcpu.cpp $(ENGINE_HDRS) coord3d.cuh host_compat.h | $(CPU_BUILD)
+	$(CXX) $(CPU_CXXFLAGS) -c cpu/refcpu.cpp -o $@
+
+$(CPU_BUILD)/librefcpu.a: $(CPU_OBJS)
+	ar rcs $@ $(CPU_OBJS)
+
+$(CPU_BUILD)/cpu_rules_test: tests/cpu_rules_test.cpp $(CPU_BUILD)/movegen.o \
+		$(CPU_BUILD)/make_unmake.o $(CPU_BUILD)/attacks.o $(CPU_BUILD)/zobrist.o
+	$(CXX) $(CPU_CXXFLAGS) tests/cpu_rules_test.cpp \
+		$(CPU_BUILD)/movegen.o $(CPU_BUILD)/make_unmake.o \
+		$(CPU_BUILD)/attacks.o $(CPU_BUILD)/zobrist.o -o $@
+
+$(CPU_BUILD)/cpu_inspect: cpu_inspect.cpp $(CPU_BUILD)/movegen.o \
+		$(CPU_BUILD)/make_unmake.o $(CPU_BUILD)/attacks.o
+	$(CXX) $(CPU_CXXFLAGS) cpu_inspect.cpp \
+		$(CPU_BUILD)/movegen.o $(CPU_BUILD)/make_unmake.o \
+		$(CPU_BUILD)/attacks.o -o $@
+
+cpu-test: $(CPU_BUILD)/cpu_rules_test $(CPU_BUILD)/cpu_inspect $(CPU_BUILD)/librefcpu.a
+	$(CPU_BUILD)/cpu_rules_test
+
+cpu-asan:
+	$(MAKE) clean-cpu
+	$(MAKE) cpu-test CPU_CXXFLAGS="-std=c++17 -O1 -g -Wall -Wextra -DENGINE_HOST_ONLY -I. -fsanitize=address,undefined" 
+
+clean-cpu:
+	rm -rf $(CPU_BUILD)
+
 clean:
 	rm -f uci_test_engine engine engine_main.o uci_engine.o search.o time.o \
 	      zobrist.o tt.o tests/test_zobrist tests/test_tt $(ENGINE_OBJS) \
 	      $(LIB_NAME) $(REFCUDA_SO) refcuda_smoke \
 	      engine_test_perft tests/test_makeunmake_symmetry
+	rm -rf $(CPU_BUILD)
 	-$(CARGO) clean --manifest-path $(RUST_DIR)/Cargo.toml 2>/dev/null || true
 
 .PHONY: all engine uci_test arena_gpu_smoke arena_smoke engine_verify_long \
         skeleton_test clean engine_test test_zobrist test_tt \
-        librefcuda dojo_ref dojo_ref_test dojo_ref_play
+        librefcuda dojo_ref dojo_ref_test dojo_ref_play \
+        cpu-test cpu-asan clean-cpu

@@ -124,6 +124,27 @@ __global__ void k_in_check_batched(const Position* s, int n, int* out) {
     out[idx] = in_check(&s[idx], s[idx].side) ? 1 : 0;
 }
 
+static int check_cuda(cudaError_t err, const char* what) {
+    if (err == cudaSuccess) return 0;
+    std::fprintf(stderr, "refcuda: %s: %s\n", what, cudaGetErrorString(err));
+    return -1;
+}
+
+// Frees device memory on every exit path, including a failed cudaMalloc.
+template <typename T>
+struct DevMem {
+    T* p = nullptr;
+    ~DevMem() { if (p) cudaFree(p); }
+    int alloc(size_t count) {
+        cudaError_t err = cudaMalloc(&p, sizeof(T) * count);
+        if (err != cudaSuccess) {
+            p = nullptr;
+            return check_cuda(err, "cudaMalloc");
+        }
+        return 0;
+    }
+};
+
 } // anonymous namespace
 
 // =============================================================================
@@ -146,8 +167,7 @@ void refc_position_free(Position* p) {
 /// Returns 0 on success, non-zero on parse failure.
 int refc_parse_fen(const char* fen, Position* out) {
     if (!fen || !out) return -1;
-    parse_fen(fen, out);
-    return 0;
+    return parse_fen(fen, out);
 }
 
 /// Compute legal moves for `pos` ON GPU. Writes up to `max_n` moves into
@@ -156,26 +176,29 @@ int refc_parse_fen(const char* fen, Position* out) {
 int refc_legal_moves(const Position* pos, int32_t* moves_out, int max_n) {
     if (!pos || !moves_out || max_n <= 0) return -1;
 
-    Position* d_pos = nullptr;
-    Move* d_moves = nullptr;
-    int* d_count = nullptr;
-    cudaMalloc(&d_pos, sizeof(Position));
-    cudaMalloc(&d_moves, sizeof(Move) * MAX_MOVES);
-    cudaMalloc(&d_count, sizeof(int));
+    DevMem<Position> d_pos;
+    DevMem<Move> d_moves;
+    DevMem<int> d_count;
+    if (d_pos.alloc(1) || d_moves.alloc(MAX_MOVES) || d_count.alloc(1)) return -1;
 
-    cudaMemcpy(d_pos, pos, sizeof(Position), cudaMemcpyHostToDevice);
-    k_legal_moves<<<1, 1>>>(d_pos, d_moves, d_count);
-    cudaDeviceSynchronize();
+    if (check_cuda(cudaMemcpy(d_pos.p, pos, sizeof(Position), cudaMemcpyHostToDevice),
+                   "H2D position")) return -1;
+    k_legal_moves<<<1, 1>>>(d_pos.p, d_moves.p, d_count.p);
+    if (check_cuda(cudaGetLastError(), "k_legal_moves launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_legal_moves sync")) return -1;
 
     int count = 0;
-    cudaMemcpy(&count, d_count, sizeof(int), cudaMemcpyDeviceToHost);
+    if (check_cuda(cudaMemcpy(&count, d_count.p, sizeof(int), cudaMemcpyDeviceToHost),
+                   "D2H count")) return -1;
+    if (count < 0) count = 0;
+    if (count > MAX_MOVES) count = MAX_MOVES;
     if (count > max_n) count = max_n;
-    cudaMemcpy(moves_out, d_moves, sizeof(int32_t) * count,
-               cudaMemcpyDeviceToHost);
-
-    cudaFree(d_pos);
-    cudaFree(d_moves);
-    cudaFree(d_count);
+    if (count > 0 &&
+        check_cuda(cudaMemcpy(moves_out, d_moves.p, sizeof(int32_t) * (size_t)count,
+                              cudaMemcpyDeviceToHost),
+                   "D2H moves")) {
+        return -1;
+    }
     return count;
 }
 
@@ -184,55 +207,53 @@ int refc_legal_moves(const Position* pos, int32_t* moves_out, int max_n) {
 int refc_make_move(const Position* pos, int32_t mv, Position* out) {
     if (!pos || !out) return -1;
 
-    Position *d_in = nullptr, *d_out = nullptr;
-    cudaMalloc(&d_in, sizeof(Position));
-    cudaMalloc(&d_out, sizeof(Position));
+    DevMem<Position> d_in;
+    DevMem<Position> d_out;
+    if (d_in.alloc(1) || d_out.alloc(1)) return -1;
 
-    cudaMemcpy(d_in, pos, sizeof(Position), cudaMemcpyHostToDevice);
-    k_make_move<<<1, 1>>>(d_in, mv, d_out);
-    cudaDeviceSynchronize();
-    cudaMemcpy(out, d_out, sizeof(Position), cudaMemcpyDeviceToHost);
-
-    cudaFree(d_in);
-    cudaFree(d_out);
+    if (check_cuda(cudaMemcpy(d_in.p, pos, sizeof(Position), cudaMemcpyHostToDevice),
+                   "H2D position")) return -1;
+    k_make_move<<<1, 1>>>(d_in.p, mv, d_out.p);
+    if (check_cuda(cudaGetLastError(), "k_make_move launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_make_move sync")) return -1;
+    if (check_cuda(cudaMemcpy(out, d_out.p, sizeof(Position), cudaMemcpyDeviceToHost),
+                   "D2H position")) return -1;
     return 0;
 }
 
 /// Side-to-move's king under attack (in_check on GPU).
 int refc_is_check(const Position* pos) {
     if (!pos) return 0;
-    Position* d_pos = nullptr;
-    int* d_out = nullptr;
-    cudaMalloc(&d_pos, sizeof(Position));
-    cudaMalloc(&d_out, sizeof(int));
+    DevMem<Position> d_pos;
+    DevMem<int> d_out;
+    if (d_pos.alloc(1) || d_out.alloc(1)) return 0;
 
-    cudaMemcpy(d_pos, pos, sizeof(Position), cudaMemcpyHostToDevice);
-    k_in_check<<<1, 1>>>(d_pos, d_out);
-    cudaDeviceSynchronize();
+    if (check_cuda(cudaMemcpy(d_pos.p, pos, sizeof(Position), cudaMemcpyHostToDevice),
+                   "H2D position")) return 0;
+    k_in_check<<<1, 1>>>(d_pos.p, d_out.p);
+    if (check_cuda(cudaGetLastError(), "k_in_check launch")) return 0;
+    if (check_cuda(cudaDeviceSynchronize(), "k_in_check sync")) return 0;
     int v = 0;
-    cudaMemcpy(&v, d_out, sizeof(int), cudaMemcpyDeviceToHost);
-
-    cudaFree(d_pos);
-    cudaFree(d_out);
+    if (check_cuda(cudaMemcpy(&v, d_out.p, sizeof(int), cudaMemcpyDeviceToHost),
+                   "D2H check")) return 0;
     return v;
 }
 
 /// Number of legal moves at this position (computed on GPU).
 int refc_legal_count(const Position* pos) {
     if (!pos) return 0;
-    Position* d_pos = nullptr;
-    int* d_out = nullptr;
-    cudaMalloc(&d_pos, sizeof(Position));
-    cudaMalloc(&d_out, sizeof(int));
+    DevMem<Position> d_pos;
+    DevMem<int> d_out;
+    if (d_pos.alloc(1) || d_out.alloc(1)) return -1;
 
-    cudaMemcpy(d_pos, pos, sizeof(Position), cudaMemcpyHostToDevice);
-    k_legal_count<<<1, 1>>>(d_pos, d_out);
-    cudaDeviceSynchronize();
+    if (check_cuda(cudaMemcpy(d_pos.p, pos, sizeof(Position), cudaMemcpyHostToDevice),
+                   "H2D position")) return -1;
+    k_legal_count<<<1, 1>>>(d_pos.p, d_out.p);
+    if (check_cuda(cudaGetLastError(), "k_legal_count launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_legal_count sync")) return -1;
     int v = 0;
-    cudaMemcpy(&v, d_out, sizeof(int), cudaMemcpyDeviceToHost);
-
-    cudaFree(d_pos);
-    cudaFree(d_out);
+    if (check_cuda(cudaMemcpy(&v, d_out.p, sizeof(int), cudaMemcpyDeviceToHost),
+                   "D2H count")) return -1;
     return v;
 }
 
@@ -249,22 +270,20 @@ int refc_is_stalemate(const Position* pos) {
 /// 3D coord (x,y,z) + octant id. Returns 0 on success.
 int refc_coord3d(const Position* pos, float* xyz_out, int* octant_out) {
     if (!pos || !xyz_out || !octant_out) return -1;
-    Position* d_pos = nullptr;
-    float* d_xyz = nullptr;
-    int* d_oct = nullptr;
-    cudaMalloc(&d_pos, sizeof(Position));
-    cudaMalloc(&d_xyz, sizeof(float) * 3);
-    cudaMalloc(&d_oct, sizeof(int));
+    DevMem<Position> d_pos;
+    DevMem<float> d_xyz;
+    DevMem<int> d_oct;
+    if (d_pos.alloc(1) || d_xyz.alloc(3) || d_oct.alloc(1)) return -1;
 
-    cudaMemcpy(d_pos, pos, sizeof(Position), cudaMemcpyHostToDevice);
-    k_coord3d<<<1, 1>>>(d_pos, d_xyz, d_oct);
-    cudaDeviceSynchronize();
-    cudaMemcpy(xyz_out, d_xyz, sizeof(float) * 3, cudaMemcpyDeviceToHost);
-    cudaMemcpy(octant_out, d_oct, sizeof(int), cudaMemcpyDeviceToHost);
-
-    cudaFree(d_pos);
-    cudaFree(d_xyz);
-    cudaFree(d_oct);
+    if (check_cuda(cudaMemcpy(d_pos.p, pos, sizeof(Position), cudaMemcpyHostToDevice),
+                   "H2D position")) return -1;
+    k_coord3d<<<1, 1>>>(d_pos.p, d_xyz.p, d_oct.p);
+    if (check_cuda(cudaGetLastError(), "k_coord3d launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_coord3d sync")) return -1;
+    if (check_cuda(cudaMemcpy(xyz_out, d_xyz.p, sizeof(float) * 3, cudaMemcpyDeviceToHost),
+                   "D2H coord")) return -1;
+    if (check_cuda(cudaMemcpy(octant_out, d_oct.p, sizeof(int), cudaMemcpyDeviceToHost),
+                   "D2H octant")) return -1;
     return 0;
 }
 
@@ -301,24 +320,25 @@ int refc_legal_moves_batched(const Position* positions, int n,
                              int32_t* moves_out, int* counts_out) {
     if (!positions || !moves_out || !counts_out || n <= 0) return -1;
 
-    Position* d_pos = nullptr;
-    Move* d_moves = nullptr;
-    int* d_counts = nullptr;
-    cudaMalloc(&d_pos, sizeof(Position) * n);
-    cudaMalloc(&d_moves, sizeof(Move) * MAX_MOVES * n);
-    cudaMalloc(&d_counts, sizeof(int) * n);
+    DevMem<Position> d_pos;
+    DevMem<Move> d_moves;
+    DevMem<int> d_counts;
+    if (d_pos.alloc((size_t)n) || d_moves.alloc((size_t)MAX_MOVES * (size_t)n) ||
+        d_counts.alloc((size_t)n)) return -1;
 
-    cudaMemcpy(d_pos, positions, sizeof(Position) * n, cudaMemcpyHostToDevice);
-    k_legal_moves_batched<<<n, 1>>>(d_pos, n, d_moves, d_counts);
-    cudaDeviceSynchronize();
-
-    cudaMemcpy(counts_out, d_counts, sizeof(int) * n, cudaMemcpyDeviceToHost);
-    cudaMemcpy(moves_out, d_moves, sizeof(int32_t) * MAX_MOVES * n,
-               cudaMemcpyDeviceToHost);
-
-    cudaFree(d_pos);
-    cudaFree(d_moves);
-    cudaFree(d_counts);
+    if (check_cuda(cudaMemcpy(d_pos.p, positions, sizeof(Position) * (size_t)n,
+                              cudaMemcpyHostToDevice),
+                   "H2D positions")) return -1;
+    k_legal_moves_batched<<<n, 1>>>(d_pos.p, n, d_moves.p, d_counts.p);
+    if (check_cuda(cudaGetLastError(), "k_legal_moves_batched launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_legal_moves_batched sync")) return -1;
+    if (check_cuda(cudaMemcpy(counts_out, d_counts.p, sizeof(int) * (size_t)n,
+                              cudaMemcpyDeviceToHost),
+                   "D2H counts")) return -1;
+    if (check_cuda(cudaMemcpy(moves_out, d_moves.p,
+                              sizeof(int32_t) * MAX_MOVES * (size_t)n,
+                              cudaMemcpyDeviceToHost),
+                   "D2H moves")) return -1;
     return 0;
 }
 
@@ -327,21 +347,23 @@ int refc_make_move_batched(const Position* positions, int n,
                            const int32_t* moves, Position* out) {
     if (!positions || !moves || !out || n <= 0) return -1;
 
-    Position *d_in = nullptr, *d_out = nullptr;
-    Move* d_mvs = nullptr;
-    cudaMalloc(&d_in, sizeof(Position) * n);
-    cudaMalloc(&d_out, sizeof(Position) * n);
-    cudaMalloc(&d_mvs, sizeof(Move) * n);
+    DevMem<Position> d_in;
+    DevMem<Position> d_out;
+    DevMem<Move> d_mvs;
+    if (d_in.alloc((size_t)n) || d_out.alloc((size_t)n) || d_mvs.alloc((size_t)n)) return -1;
 
-    cudaMemcpy(d_in, positions, sizeof(Position) * n, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mvs, moves, sizeof(Move) * n, cudaMemcpyHostToDevice);
-    k_make_move_batched<<<n, 1>>>(d_in, n, d_mvs, d_out);
-    cudaDeviceSynchronize();
-    cudaMemcpy(out, d_out, sizeof(Position) * n, cudaMemcpyDeviceToHost);
-
-    cudaFree(d_in);
-    cudaFree(d_out);
-    cudaFree(d_mvs);
+    if (check_cuda(cudaMemcpy(d_in.p, positions, sizeof(Position) * (size_t)n,
+                              cudaMemcpyHostToDevice),
+                   "H2D positions")) return -1;
+    if (check_cuda(cudaMemcpy(d_mvs.p, moves, sizeof(Move) * (size_t)n,
+                              cudaMemcpyHostToDevice),
+                   "H2D moves")) return -1;
+    k_make_move_batched<<<n, 1>>>(d_in.p, n, d_mvs.p, d_out.p);
+    if (check_cuda(cudaGetLastError(), "k_make_move_batched launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_make_move_batched sync")) return -1;
+    if (check_cuda(cudaMemcpy(out, d_out.p, sizeof(Position) * (size_t)n,
+                              cudaMemcpyDeviceToHost),
+                   "D2H positions")) return -1;
     return 0;
 }
 
@@ -349,18 +371,19 @@ int refc_make_move_batched(const Position* positions, int n,
 int refc_is_check_batched(const Position* positions, int n, int* out) {
     if (!positions || !out || n <= 0) return -1;
 
-    Position* d_pos = nullptr;
-    int* d_out = nullptr;
-    cudaMalloc(&d_pos, sizeof(Position) * n);
-    cudaMalloc(&d_out, sizeof(int) * n);
+    DevMem<Position> d_pos;
+    DevMem<int> d_out;
+    if (d_pos.alloc((size_t)n) || d_out.alloc((size_t)n)) return -1;
 
-    cudaMemcpy(d_pos, positions, sizeof(Position) * n, cudaMemcpyHostToDevice);
-    k_in_check_batched<<<n, 1>>>(d_pos, n, d_out);
-    cudaDeviceSynchronize();
-    cudaMemcpy(out, d_out, sizeof(int) * n, cudaMemcpyDeviceToHost);
-
-    cudaFree(d_pos);
-    cudaFree(d_out);
+    if (check_cuda(cudaMemcpy(d_pos.p, positions, sizeof(Position) * (size_t)n,
+                              cudaMemcpyHostToDevice),
+                   "H2D positions")) return -1;
+    k_in_check_batched<<<n, 1>>>(d_pos.p, n, d_out.p);
+    if (check_cuda(cudaGetLastError(), "k_in_check_batched launch")) return -1;
+    if (check_cuda(cudaDeviceSynchronize(), "k_in_check_batched sync")) return -1;
+    if (check_cuda(cudaMemcpy(out, d_out.p, sizeof(int) * (size_t)n,
+                              cudaMemcpyDeviceToHost),
+                   "D2H checks")) return -1;
     return 0;
 }
 

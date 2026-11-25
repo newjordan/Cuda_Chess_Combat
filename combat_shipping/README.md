@@ -1,5 +1,9 @@
 # cuda-dojo combat_shipping — arbiter shadow comparison
 
+The live and replay harnesses below call the GPU referee. The rules
+layer can be built and tested with no GPU from the repository root:
+`make test`. See the root [README](../README.md).
+
 Shippable, self-contained module that demonstrates `cuda-dojo` (combat
 branch) acting as a **drop-in replacement** for the AgentChess
 `match-processor` arbiter. The package is read-only with respect to

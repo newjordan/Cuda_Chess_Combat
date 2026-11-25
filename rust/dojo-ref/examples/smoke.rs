@@ -1,9 +1,11 @@
-//! Smoke test for dojo-ref — proves Rust ↔ GPU chess works end-to-end.
+//! Smoke test for the dojo-ref rules binding.
 //!
-//! Run from the dojo-ref crate dir:
-//!     cargo run --example smoke
+//! CPU, no GPU:
+//!     cargo run --manifest-path rust/Cargo.toml --no-default-features --features cpu --example smoke
+//! GPU (needs librefcuda.so on the linker path):
+//!     cargo run --manifest-path rust/Cargo.toml --example smoke
 
-use dojo_ref::{Position, Move};
+use dojo_ref::Position;
 
 fn main() {
     println!("dojo-ref smoke");

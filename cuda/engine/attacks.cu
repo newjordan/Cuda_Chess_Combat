@@ -10,10 +10,6 @@
 
 namespace engine {
 
-// Public constant-memory tables (other .cu files can reference these).
-__constant__ int d_KNIGHT_OFFSETS[8] = {-17, -15, -10, -6, 6, 10, 15, 17};
-__constant__ int d_KING_OFFSETS[8]   = { -9,  -8,  -7, -1, 1,  7,  8,  9};
-
 // Private helper: absolute value usable on host and device.
 __host__ __device__ static inline int abs_i(int x) { return x < 0 ? -x : x; }
 

@@ -2,13 +2,18 @@
 name = "dojo-ref-py"
 version = "0.1.0"
 edition = "2021"
-description = "Python bindings for the dojo-ref GPU chess referee"
+description = "Python bindings for the dojo-ref chess referee"
 license = "Apache-2.0"
 
 [lib]
 name = "dojo_ref"
 crate-type = ["cdylib"]
 
+[features]
+default = ["gpu"]
+gpu = ["dojoref/gpu"]
+cpu = ["dojoref/cpu"]
+
 [dependencies]
-dojoref = { package = "dojo-ref", path = "../dojo-ref" }
-pyo3 = { version = "0.22", features = ["extension-module"] }
+dojoref = { package = "dojo-ref", path = "../dojo-ref", default-features = false }
+pyo3 = { version = "0.24", features = ["extension-module"] }

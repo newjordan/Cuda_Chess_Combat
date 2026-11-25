@@ -487,9 +487,8 @@ bool decode_uci_move(const Position& pos, const std::string& uci, Move* out_move
 bool set_position(const std::string& fen,
                   const std::vector<std::string>& moves) {
     Position pos{};
-    parse_fen(fen.c_str(), &pos);
-    if (pos.kingPos[WHITE_SIDE] < 0 || pos.kingPos[BLACK_SIDE] < 0) {
-        std::fprintf(stderr, "engine: invalid FEN (missing king): %s\n", fen.c_str());
+    if (parse_fen(fen.c_str(), &pos) != 0) {
+        std::fprintf(stderr, "engine: invalid FEN: %s\n", fen.c_str());
         return false;
     }
 

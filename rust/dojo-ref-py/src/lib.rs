@@ -1,8 +1,8 @@
-//! Python bindings for dojo-ref. All chess work runs on the GPU; Python
-//! just holds typed Position / Move / Engine handles and gets results back.
+//! Python bindings for dojo-ref.
 //!
-//! Build: `maturin develop` from this crate's dir installs a `dojo_ref`
-//! Python module backed by librefcuda.so.
+//! The default feature links the CUDA referee (`librefcuda.so`).
+//! `maturin develop --no-default-features --features cpu` builds the same
+//! API against the host rules library, with search unavailable.
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -10,7 +10,9 @@ use pyo3::prelude::*;
 use dojoref as dr;
 
 /// Wraps dr::Position. All methods dispatch chess work to GPU kernels.
-#[pyclass(name = "Position")]
+// `unsendable`: the position owns a raw C allocation. pyo3 0.24 requires
+// pyclasses to be Send + Sync unless they opt out.
+#[pyclass(name = "Position", unsendable)]
 struct PyPosition {
     inner: dr::Position,
 }
@@ -72,7 +74,7 @@ impl PyPosition {
 }
 
 /// Wraps dr::Engine. Search subsystem (TT, alpha-beta, PeSTO) on GPU.
-#[pyclass(name = "Engine")]
+#[pyclass(name = "Engine", unsendable)]
 struct PyEngine {
     inner: dr::Engine,
 }
