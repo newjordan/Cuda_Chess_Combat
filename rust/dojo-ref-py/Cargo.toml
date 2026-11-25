@@ -1,9 +1,9 @@
 [package]
 name = "dojo-ref-py"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Python bindings for the dojo-ref chess referee"
-license = "Apache-2.0"
+license.workspace = true
 
 [lib]
 name = "dojo_ref"
@@ -16,4 +16,4 @@ cpu = ["dojoref/cpu"]
 
 [dependencies]
 dojoref = { package = "dojo-ref", path = "../dojo-ref", default-features = false }
-pyo3 = { version = "0.24", features = ["extension-module"] }
+pyo3 = { version = "0.28", features = ["extension-module"] }

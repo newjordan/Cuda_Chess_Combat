@@ -117,9 +117,12 @@ cargo run --manifest-path rust/Cargo.toml --release --example match
 
 ## Python module
 
-`dojo_ref` is a PyO3 0.24 extension. `maturin` `>=1.7,<2` and Python
-`>=3.11` are declared in `rust/dojo-ref-py/pyproject.toml`. Install
-headers (`python3-dev`) before building.
+`dojo_ref` is locked to PyO3 0.28.3. That crate's build script accepts
+CPython through 3.14, which is the interpreter version that rejected
+PyO3 0.24 on the first CI run. It still builds with Rust 1.83.
+`maturin` `>=1.7,<2` and Python `>=3.11` are declared in
+`rust/dojo-ref-py/pyproject.toml`. Install headers (`python3-dev`)
+before building. The local `cargo check` used Python 3.12.3.
 
 ```bash
 # CPU rules, no CUDA

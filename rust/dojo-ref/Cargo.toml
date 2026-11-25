@@ -1,9 +1,9 @@
 [package]
 name = "dojo-ref"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 description = "Rust FFI for the chess referee. Default links librefcuda.so; the cpu feature compiles the rules layer with the host compiler."
-license = "Apache-2.0"
+license.workspace = true
 
 [lib]
 name = "dojo_ref"
